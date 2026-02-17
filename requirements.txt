@@ -2,7 +2,6 @@ matplotlib
 Pillow
 numpy
 scikit-learn
-pytorch
+torch
 torchvision
-albumentations
 streamlit
