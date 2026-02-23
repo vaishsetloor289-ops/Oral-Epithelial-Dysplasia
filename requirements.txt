@@ -1,6 +1,7 @@
 matplotlib
 Pillow
 numpy
+albumentations
 scikit-learn
 torch
 torchvision

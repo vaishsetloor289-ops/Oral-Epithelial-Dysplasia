@@ -314,7 +314,8 @@ if uploaded_files and len(magnifications) == len(uploaded_files) and all(mag.str
         'Magnification': [r['magnification'] for r in results],
         'Prediction': [r['predicted_class'] for r in results],
         'High Risk Prob': [f"{r['probabilities'][0]:.3f}" for r in results],
-        'Low Risk Prob': [f"{r['probabilities'][1]:.3f}" for r in results]
+        'Low Risk Prob': [f"{r['probabilities'][1]:.3f}" for r in results],
+        'No Risk Prob': [f"{r['probabilities'][2]:.3f}" for r in results]
     }
 
     st.table(result_table)
