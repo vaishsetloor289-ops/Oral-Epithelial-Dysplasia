@@ -26,8 +26,6 @@ st.title("🔬 Epithelial Dysplasia (OED) Classifier")
 st.markdown("""
 This application classifies Oral Epithelial Dysplasia (OED) patches as **High Risk** or **Low Risk**
 using a trained Random Forest model with ResNet50 feature extraction.
-
-**New Feature:** Upload multiple images per case for comprehensive analysis using majority voting and average probability aggregation.
 """)
 
 # Load model artifacts
