@@ -236,15 +236,22 @@ if uploaded_files and len(magnifications) == len(uploaded_files) and all(mag.str
                 with cols[j]:
                     st.image(result['image'], caption=f"{result['filename'][:15]}...", use_column_width=True)
 
-                    # Color-coded prediction
+                    # RF prediction
                     if result['predicted_class_rf'] == "High Risk OED":
-                        st.error(f"**{result['predicted_class_rf']}**")
+                        st.error(f"RF: **{result['predicted_class_rf']}**")
                     else:
-                        st.success(f"**{result['predicted_class_rf']}**")
+                        st.success(f"RF: **{result['predicted_class_rf']}**")
+                    rf_conf = max(result['probabilities_rf'])
+
+                    # SVM prediction
+                    if result['predicted_class_svm'] == "High Risk OED":
+                        st.error(f"SVM: **{result['predicted_class_svm']}**")
+                    else:
+                        st.success(f"SVM: **{result['predicted_class_svm']}**")
+                    svm_conf = max(result['probabilities_svm'])
 
                     # Show confidence and magnification
-                    confidence = max(result['probabilities_rf'])
-                    st.caption(f"Confidence: {confidence:.1%} | Mag: {result['magnification']}")
+                    st.caption(f"RF {rf_conf:.1%} | SVM {svm_conf:.1%} | Mag: {result['magnification']}")
 
     # Aggregate results
     st.divider()
@@ -268,7 +275,7 @@ if uploaded_files and len(magnifications) == len(uploaded_files) and all(mag.str
     # Display aggregated results in two side-by-side columns per classifier
     rf_col1, rf_col2 = st.columns(2)
     with rf_col1:
-        st.subheader("🅡🅕 Majority Voting")
+        st.subheader("RF Majority Voting")
         if majority_class_rf == "High Risk OED":
             st.error(f"**Final Prediction: {majority_class_rf}**")
         else:
@@ -280,7 +287,7 @@ if uploaded_files and len(magnifications) == len(uploaded_files) and all(mag.str
         for class_name, count in vote_counts_rf.items():
             st.write(f"- {class_name}: {count} votes")
     with rf_col2:
-        st.subheader("🅡🅕 Average Probability")
+        st.subheader("RF Average Probability")
         if avg_class_rf == "High Risk OED":
             st.error(f"**Final Prediction: {avg_class_rf}**")
         else:
@@ -296,7 +303,7 @@ if uploaded_files and len(magnifications) == len(uploaded_files) and all(mag.str
 
     svm_col1, svm_col2 = st.columns(2)
     with svm_col1:
-        st.subheader("🅢🅥🅜 Majority Voting")
+        st.subheader("SVM Majority Voting")
         if majority_class_svm == "High Risk OED":
             st.error(f"**Final Prediction: {majority_class_svm}**")
         else:
@@ -308,7 +315,7 @@ if uploaded_files and len(magnifications) == len(uploaded_files) and all(mag.str
         for class_name, count in vote_counts_svm.items():
             st.write(f"- {class_name}: {count} votes")
     with svm_col2:
-        st.subheader("🅢🅥🅜 Average Probability")
+        st.subheader("SVM Average Probability")
         if avg_class_svm == "High Risk OED":
             st.error(f"**Final Prediction: {avg_class_svm}**")
         else:
@@ -421,7 +428,7 @@ st.markdown("""
 ---
 **Model Information:**
 - Classifiers used: Random Forest & Linear SVM
-- RF details: 100 estimators, max_depth=20, trained with `random_state=42`
+- RF details: 100 estimators, max_depth=20
 - SVM details: LinearSVC, C=1.0, class_weight='balanced', max_iter=2000
 - Feature extractor: ResNet50 (pretrained on ImageNet, final layer removed)
 - Input size for each patch: 224 × 224 pixels
