@@ -420,13 +420,15 @@ st.divider()
 st.markdown("""
 ---
 **Model Information:**
-- Model Type: Random Forest Classifier (100 estimators)
-- Feature Extraction: ResNet50 (pretrained on ImageNet)
-- Input Size: 224 × 224 pixels
-- Feature Dimension: 2048
-- Dataset: Training on augmented OED patches
+- Classifiers used: Random Forest & Linear SVM
+- RF details: 100 estimators, max_depth=20, trained with `random_state=42`
+- SVM details: LinearSVC, C=1.0, class_weight='balanced', max_iter=2000
+- Feature extractor: ResNet50 (pretrained on ImageNet, final layer removed)
+- Input size for each patch: 224 × 224 pixels
+- Feature dimension after ResNet: 2048
+- Training dataset: augmented OED patches (PIL augmentation applied)
 
-**Aggregation Methods:**
-- **Majority Voting**: Simple majority vote across all images
-- **Average Probability**: Average probabilities across all images, then select highest
+**Aggregation Methods (per model):**
+- **Majority Voting**: Count predictions across all images
+- **Average Probability**: Average probability (or sigmoid‑converted decision scores) then take highest
 """)
