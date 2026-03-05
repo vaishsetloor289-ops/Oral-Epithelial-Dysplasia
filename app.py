@@ -10,6 +10,7 @@ import torch
 import torchvision.models as models
 import torchvision.transforms as transforms
 from PIL import Image
+from scipy.special import expit
 from torch import nn
 
 ssl._create_default_https_context = ssl._create_unverified_context
@@ -34,8 +35,11 @@ def load_model_artifacts():
     """Load the trained model, scaler, and class map"""
     model_dir = Path.cwd() / 'viz_outputs' / 'models'
 
-    with open(model_dir / 'oed_classifier.pkl', 'rb') as f:
-        clf = pickle.load(f)
+    with open(model_dir / 'oed_rf_classifier.pkl', 'rb') as f:
+        rf_clf = pickle.load(f)
+
+    with open(model_dir / 'oed_svm_classifier.pkl', 'rb') as f:
+        svm_clf = pickle.load(f)
 
     with open(model_dir / 'scaler.pkl', 'rb') as f:
         scaler = pickle.load(f)
@@ -43,7 +47,7 @@ def load_model_artifacts():
     with open(model_dir / 'class_map.pkl', 'rb') as f:
         class_map = pickle.load(f)
 
-    return clf, scaler, class_map
+    return rf_clf, svm_clf, scaler, class_map
 
 @st.cache_resource
 def load_resnet_model():
@@ -69,18 +73,36 @@ def extract_features_resnet(image_array, model, device):
     return features
 
 def classify_image(image_array, clf, scaler, class_map, resnet_model, device):
-    """Classify the image and return predictions"""
+    """Classify the image and return predictions
+
+    Handles classifiers that lack `predict_proba` (e.g. LinearSVC) by
+    converting `decision_function` output into probabilities using a sigmoid.
+    """
     # Extract features
     features = extract_features_resnet(image_array, resnet_model, device)
 
     # Scale features
     features_scaled = scaler.transform(features.reshape(1, -1))
 
-    # Make prediction
+    # Make prediction (always available)
     prediction = clf.predict(features_scaled)[0]
-    probabilities = clf.predict_proba(features_scaled)[0]
 
-    # Get class name
+    # Compute probabilities if possible, else fall back to decision_function
+    if hasattr(clf, "predict_proba"):
+        probabilities = clf.predict_proba(features_scaled)[0]
+    else:
+        # use decision_function -> sigmoid -> normalize
+        decision = clf.decision_function(features_scaled)[0]
+        # binary vs multiclass
+        if np.ndim(decision) == 0 or len(np.unique(list(class_map.values()))) == 2:
+            p = expit(decision)
+            probabilities = np.array([1 - p, p])
+        else:
+            p = expit(decision)
+            p = p / p.sum()
+            probabilities = p
+
+    # Get class name mapping
     class_names = {v: k for k, v in class_map.items()}
     predicted_class = class_names[prediction]
 
@@ -131,7 +153,7 @@ def aggregate_predictions_average_probability(all_probabilities, class_map):
 
 # Load models
 try:
-    clf, scaler, class_map = load_model_artifacts()
+    rf_clf, svm_clf, scaler, class_map = load_model_artifacts()
     resnet_model, device = load_resnet_model()
 except Exception as e:
     st.error(f"Error loading models: {e}")
@@ -183,16 +205,21 @@ if uploaded_files and len(magnifications) == len(uploaded_files) and all(mag.str
             image_resized = image.resize((224, 224))
             image_array = np.array(image_resized)
 
-            # Classify
-            predicted_class, probabilities, _ = classify_image(
-                image_resized, clf, scaler, class_map, resnet_model, device
+            # Classify with both models
+            rf_pred, rf_probs, _ = classify_image(
+                image_resized, rf_clf, scaler, class_map, resnet_model, device
+            )
+            svm_pred, svm_probs, _ = classify_image(
+                image_resized, svm_clf, scaler, class_map, resnet_model, device
             )
 
             results.append({
                 'filename': uploaded_file.name,
                 'image': image,
-                'predicted_class': predicted_class,
-                'probabilities': probabilities,
+                'predicted_class_rf': rf_pred,
+                'probabilities_rf': rf_probs,
+                'predicted_class_svm': svm_pred,
+                'probabilities_svm': svm_probs,
                 'magnification': magnifications[uploaded_file.name]
             })
 
@@ -210,110 +237,171 @@ if uploaded_files and len(magnifications) == len(uploaded_files) and all(mag.str
                     st.image(result['image'], caption=f"{result['filename'][:15]}...", use_column_width=True)
 
                     # Color-coded prediction
-                    if result['predicted_class'] == "High Risk OED":
-                        st.error(f"**{result['predicted_class']}**")
+                    if result['predicted_class_rf'] == "High Risk OED":
+                        st.error(f"**{result['predicted_class_rf']}**")
                     else:
-                        st.success(f"**{result['predicted_class']}**")
+                        st.success(f"**{result['predicted_class_rf']}**")
 
                     # Show confidence and magnification
-                    confidence = max(result['probabilities'])
+                    confidence = max(result['probabilities_rf'])
                     st.caption(f"Confidence: {confidence:.1%} | Mag: {result['magnification']}")
 
     # Aggregate results
     st.divider()
     st.subheader("📊 Aggregated Case Results")
 
-    # Extract predictions and probabilities for aggregation
-    predictions = [r['predicted_class'] for r in results]
-    all_probabilities = [r['probabilities'] for r in results]
+    # Extract predictions and probabilities for aggregation for each classifier
+    predictions_rf = [r['predicted_class_rf'] for r in results]
+    all_prob_rf = [r['probabilities_rf'] for r in results]
+    predictions_svm = [r['predicted_class_svm'] for r in results]
+    all_prob_svm = [r['probabilities_svm'] for r in results]
 
-    # Majority Voting
-    majority_class, majority_confidence = aggregate_predictions_majority_voting(predictions)
+    # Random Forest aggregations
+    majority_class_rf, majority_confidence_rf = aggregate_predictions_majority_voting(predictions_rf)
+    avg_class_rf, avg_probabilities_rf = aggregate_predictions_average_probability(all_prob_rf, class_map)
 
-    # Average Probability
-    avg_class, avg_probabilities = aggregate_predictions_average_probability(all_probabilities, class_map)
+    # SVM aggregations
+    majority_class_svm, majority_confidence_svm = aggregate_predictions_majority_voting(predictions_svm)
+    avg_class_svm, avg_probabilities_svm = aggregate_predictions_average_probability(all_prob_svm, class_map)
 
     # Display aggregated results
-    col1, col2 = st.columns(2)
-
-    with col1:
-        st.subheader("🏆 Majority Voting")
-        if majority_class == "High Risk OED":
-            st.error(f"**Final Prediction: {majority_class}**")
+    # Display aggregated results in two side-by-side columns per classifier
+    rf_col1, rf_col2 = st.columns(2)
+    with rf_col1:
+        st.subheader("🅡🅕 Majority Voting")
+        if majority_class_rf == "High Risk OED":
+            st.error(f"**Final Prediction: {majority_class_rf}**")
         else:
-            st.success(f"**Final Prediction: {majority_class}**")
-
-        st.metric(label="Agreement", value=f"{majority_confidence:.1%}")
-        st.caption(f"Based on {len(predictions)} images")
-
-        # Show vote distribution
-        vote_counts = Counter(predictions)
+            st.success(f"**Final Prediction: {majority_class_rf}**")
+        st.metric(label="Agreement", value=f"{majority_confidence_rf:.1%}")
+        st.caption(f"Based on {len(predictions_rf)} images")
+        vote_counts_rf = Counter(predictions_rf)
         st.write("**Vote Distribution:**")
-        for class_name, count in vote_counts.items():
+        for class_name, count in vote_counts_rf.items():
             st.write(f"- {class_name}: {count} votes")
-
-    with col2:
-        st.subheader("📈 Average Probability")
-        if avg_class == "High Risk OED":
-            st.error(f"**Final Prediction: {avg_class}**")
+    with rf_col2:
+        st.subheader("🅡🅕 Average Probability")
+        if avg_class_rf == "High Risk OED":
+            st.error(f"**Final Prediction: {avg_class_rf}**")
         else:
-            st.success(f"**Final Prediction: {avg_class}**")
-
-        confidence = max(avg_probabilities) if len(avg_probabilities) > 0 else 0
+            st.success(f"**Final Prediction: {avg_class_rf}**")
+        confidence = max(avg_probabilities_rf) if len(avg_probabilities_rf) > 0 else 0
         st.metric(label="Avg Confidence", value=f"{confidence:.1%}")
-
-        # Show average probabilities
         class_names_list = [name for name, _ in sorted(class_map.items(), key=lambda x: x[1])]
         st.write("**Average Probabilities:**")
-        for class_name, prob in zip(class_names_list, avg_probabilities):
+        for class_name, prob in zip(class_names_list, avg_probabilities_rf):
+            st.write(f"{class_name}: {prob:.1%}")
+
+    st.markdown("---")
+
+    svm_col1, svm_col2 = st.columns(2)
+    with svm_col1:
+        st.subheader("🅢🅥🅜 Majority Voting")
+        if majority_class_svm == "High Risk OED":
+            st.error(f"**Final Prediction: {majority_class_svm}**")
+        else:
+            st.success(f"**Final Prediction: {majority_class_svm}**")
+        st.metric(label="Agreement", value=f"{majority_confidence_svm:.1%}")
+        st.caption(f"Based on {len(predictions_svm)} images")
+        vote_counts_svm = Counter(predictions_svm)
+        st.write("**Vote Distribution:**")
+        for class_name, count in vote_counts_svm.items():
+            st.write(f"- {class_name}: {count} votes")
+    with svm_col2:
+        st.subheader("🅢🅥🅜 Average Probability")
+        if avg_class_svm == "High Risk OED":
+            st.error(f"**Final Prediction: {avg_class_svm}**")
+        else:
+            st.success(f"**Final Prediction: {avg_class_svm}**")
+        confidence = max(avg_probabilities_svm) if len(avg_probabilities_svm) > 0 else 0
+        st.metric(label="Avg Confidence", value=f"{confidence:.1%}")
+        class_names_list = [name for name, _ in sorted(class_map.items(), key=lambda x: x[1])]
+        st.write("**Average Probabilities:**")
+        for class_name, prob in zip(class_names_list, avg_probabilities_svm):
             st.write(f"{class_name}: {prob:.1%}")
 
     # Visual comparison
     st.subheader("📊 Comparison Visualization")
 
-    # Create comparison data
-    comparison_data = {
-        'Majority Voting': {'class': majority_class, 'confidence': majority_confidence},
-        'Average Probability': {'class': avg_class, 'confidence': max(avg_probabilities) if len(avg_probabilities) > 0 else 0}
+    # Random Forest comparison
+    st.markdown("### Random Forest")
+    comparison_rf = {
+        'Majority Voting': {'class': majority_class_rf, 'confidence': majority_confidence_rf},
+        'Average Probability': {
+            'class': avg_class_rf,
+            'confidence': max(avg_probabilities_rf) if len(avg_probabilities_rf) > 0 else 0
+        }
     }
-
-    # Display as metrics
     col1, col2 = st.columns(2)
     with col1:
-        mv_result = comparison_data['Majority Voting']
-        if mv_result['class'] == "High Risk OED":
+        mv = comparison_rf['Majority Voting']
+        if mv['class'] == "High Risk OED":
             st.error("**Majority Voting**")
         else:
             st.success("**Majority Voting**")
-        st.write(f"Prediction: {mv_result['class']}")
-        st.write(f"Confidence: {mv_result['confidence']:.1%}")
-
+        st.write(f"Prediction: {mv['class']}")
+        st.write(f"Confidence: {mv['confidence']:.1%}")
     with col2:
-        ap_result = comparison_data['Average Probability']
-        if ap_result['class'] == "High Risk OED":
+        ap = comparison_rf['Average Probability']
+        if ap['class'] == "High Risk OED":
             st.error("**Average Probability**")
         else:
             st.success("**Average Probability**")
-        st.write(f"Prediction: {ap_result['class']}")
-        st.write(f"Confidence: {ap_result['confidence']:.1%}")
-
-    # Agreement indicator
-    if majority_class == avg_class:
-        st.success("✅ Both methods agree on the final classification")
+        st.write(f"Prediction: {ap['class']}")
+        st.write(f"Confidence: {ap['confidence']:.1%}")
+    if majority_class_rf == avg_class_rf:
+        st.success("✅ RF methods agree on the final classification")
     else:
-        st.warning("⚠️ Methods disagree - consider expert review")
+        st.warning("⚠️ RF methods disagree - consider expert review")
+
+    st.markdown("---")
+
+    # SVM comparison
+    st.markdown("### Linear SVM")
+    comparison_svm = {
+        'Majority Voting': {'class': majority_class_svm, 'confidence': majority_confidence_svm},
+        'Average Probability': {
+            'class': avg_class_svm,
+            'confidence': max(avg_probabilities_svm) if len(avg_probabilities_svm) > 0 else 0
+        }
+    }
+    col1, col2 = st.columns(2)
+    with col1:
+        mv = comparison_svm['Majority Voting']
+        if mv['class'] == "High Risk OED":
+            st.error("**Majority Voting**")
+        else:
+            st.success("**Majority Voting**")
+        st.write(f"Prediction: {mv['class']}")
+        st.write(f"Confidence: {mv['confidence']:.1%}")
+    with col2:
+        ap = comparison_svm['Average Probability']
+        if ap['class'] == "High Risk OED":
+            st.error("**Average Probability**")
+        else:
+            st.success("**Average Probability**")
+        st.write(f"Prediction: {ap['class']}")
+        st.write(f"Confidence: {ap['confidence']:.1%}")
+    if majority_class_svm == avg_class_svm:
+        st.success("✅ SVM methods agree on the final classification")
+    else:
+        st.warning("⚠️ SVM methods disagree - consider expert review")
 
     # Detailed probability breakdown
     st.subheader("📋 Detailed Results")
 
-    # Create a table with all results
+    # Create a table with all results (RF & SVM)
     result_table = {
         'Image': [r['filename'][:20] + "..." for r in results],
         'Magnification': [r['magnification'] for r in results],
-        'Prediction': [r['predicted_class'] for r in results],
-        'High Risk Prob': [f"{r['probabilities'][0]:.3f}" for r in results],
-        'Low Risk Prob': [f"{r['probabilities'][1]:.3f}" for r in results],
-        'No Risk Prob': [f"{r['probabilities'][2]:.3f}" for r in results]
+        'RF Prediction': [r['predicted_class_rf'] for r in results],
+        'RF HighRisk': [f"{r['probabilities_rf'][0]:.3f}" for r in results],
+        'RF LowRisk': [f"{r['probabilities_rf'][1]:.3f}" for r in results],
+        'RF NoRisk': [f"{r['probabilities_rf'][2]:.3f}" for r in results],
+        'SVM Prediction': [r['predicted_class_svm'] for r in results],
+        'SVM HighRisk': [f"{r['probabilities_svm'][0]:.3f}" for r in results],
+        'SVM LowRisk': [f"{r['probabilities_svm'][1]:.3f}" for r in results],
+        'SVM NoRisk': [f"{r['probabilities_svm'][2]:.3f}" for r in results]
     }
 
     st.table(result_table)
